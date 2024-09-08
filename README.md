@@ -1,6 +1,6 @@
 # lattigo-doc
 
-## overview
+## Overview
 
 ![lattigo-hierarchy](https://github.com/tuneinsight/lattigo/raw/main/lattigo-hierarchy.svg)
 
@@ -10,20 +10,30 @@ There are three implementations of RLWE-based homomorphic encryption schemes:
 * bgv: A Full-RNS generalization of the Brakerski-Fan-Vercauteren scale-invariant (BFV) and Brakerski-Gentry-Vaikuntanathan (BGV) homomorphic encryption schemes. It provides modular arithmetic over the integers
 * ckks: A Full-RNS Homomorphic Encryption for Arithmetic for Approximate Numbers (HEAAN, a.k.a. CKKS) scheme. It provides fixed-point approximate arithmetic over the complex numbers (in its classic variant) and over the real numbers (in its conjugate-invariant variant)
 
-## supported circuits
+## Supported Circuits
 
 | Circuit                     | Support schema |
 | :-------------------------- | -------------- |
 | comparison: sign, max, step | ckks           |
 | inverse                     | ckks           |
 | mod1                        | ckks           |
-| polynomial                  | ckks、bgv      |
-| lintrans                    | ckks、bgv      |
+| polynomial                  | ckks, bgv, bfv      |
+| lintrans                    | ckks, bgv, bfv      |
 | dft                         | ckks           |
-| bootstrapping               | Ckks           |
+| minimax                       | ckks           |
+| bootstrapping               | ckks, bgv, bfv          |
 
-## supported types(CKKS)
-todo: fixcode
+
+## Supported Types | Ops
+| Type            | Op                       | Supported |
+| --------------- | ------------------------ | :-------: |   
+| ring 2**k      | `+`      Addition           |    ✅     |
+|                 | `-`  Subtraction   |    ✅     |
+|                 | `*`   Multiplication     |    ✅     |
+|                 | `-`     Neq    |    ✅     | 
+|                 | `!=` Not Equal |    ✅     |
+|                 | `<<` Shift Left                |    ✅     |
+|                 | `>>` Shift Right                |    ✅     |
 #### Addition
 
 ```go
@@ -118,3 +128,73 @@ if err := eval.Replicate(ct1, batch, n, res); err != nil {
 }
 ```
 
+## Usage Guide
+To learn how to use lattigo, you can follow the example [here](https://github.com/tuneinsight/lattigo/blob/main/examples/multiparty/int_psi/main.go).
+S1.Create encryption parameters(e.g. bgv).
+```go
+// LogN = 13 & LogQP = 218
+params, err := bgv.NewParametersFromLiteral(bgv.ParametersLiteral{
+		LogN:             13,
+		LogQ:             []int{54, 54, 54},
+		LogP:             []int{55},
+		PlaintextModulus: 65537,
+	})
+```
+
+S2. Define all the cooperators, create secret shares via common rlwe functionalities, and initiate inputs.
+```go
+N := 3 // Default number of parties
+P := make([]*party, N)
+kgen := rlwe.NewKeyGenerator(params)
+
+for i := range P {
+	pi := &party{}
+	pi.sk = kgen.GenSecretKeyNew()
+
+	pi.input = make([]uint64, params.N())
+	for j := range pi.input {
+		pi.input[j] = uint64(i)
+	}
+	P[i] = pi
+}
+```
+S3.Generate collective public encryption key, collective public evaluation key, including relinearization key, galois key etc.
+```go
+crs, err := sampling.NewKeyedPRNG([]byte{'l', 'a', 't', 't', 'i', 'g', 'o'})
+pk := ckgphase(params, crs, P)
+RelinearizationKey := rkgphase(params, crs, P)
+galKeys := gkgphase(params, crs, P)
+```
+S4.Encrypt plaintexts under collective public key.
+```go
+encoder := bgv.NewEncoder(params)
+encInputs := make([]*rlwe.Ciphertext, N)
+
+for i := range encInputs {
+	[i] = bgv.NewCiphertext(params, 1, params.MaxLevel())
+}
+encryptor := rlwe.NewEncryptor(params, pk)
+pt := bgv.NewPlaintext(params, params.MaxLevel())
+
+elapsedEncryptParty := runTimedParty(func() {
+	for i, pi := range P {
+		if err := encoder.Encode(pi.input, pt); err != nil{
+			panic(err)
+		}
+		if err := encryptor.Encrypt(pt, encInputs[i]); err != nil {
+			panic(err)
+		}
+	}
+}, N)
+
+```
+
+S5.Collective key switching and local decryption.
+```go
+encOut := cksphase(params, P, result)
+decryptor := rlwe.NewDecryptor(params, P[0].sk)
+ptres := bgv.NewPlaintext(params, params.MaxLevel())
+elapsedDecParty := runTimed(func() {
+	decryptor.Decrypt(encOut, ptres)
+})
+```
